@@ -2,12 +2,18 @@ package require Tk
 package require Thread
 package require platform
 
+toplevel .videoInfo
+wm withdraw .videoInfo
+wm title .videoInfo "Info"
+wm resizable .videoInfo 0 0
+
 puts "Your platform is [platform::generic]"
 if 	{[platform::generic] == "linux-x86_64"} {
 	set MENCODER "mencoder"
-	set VPLAYER "vlc"
+	set VPLAYER "gnome-mplayer"
 	set MPLAYER "mplayer"
 	set FILE_BROWSER "nautilus"
+	wm minsize .videoInfo 186 172
 } else {
 	set MENCODER_PATH "G:/MPlayer-p4-svn-34401"
 	set VPLAYER_PATH "C:/Program\ Files\ (x86)/K-Lite\ Codec\ Pack/Media\ Player\ Classic"
@@ -15,6 +21,7 @@ if 	{[platform::generic] == "linux-x86_64"} {
 	set MPLAYER [file join $MENCODER_PATH "mplayer.exe"]
 	set VPLAYER [file join $VPLAYER_PATH "mpc-hc.exe"]
 	set FILE_BROWSER "explorer"
+	wm minsize .videoInfo 240 223
 }
 
 set mplayer_t_status "Waiting"
@@ -31,6 +38,32 @@ set mplayer_t [thread::create {
 proc playFilm {FilmName} {
 	set cmd "exec \"$::VPLAYER\" \"$FilmName\""
 	eval [subst {thread::send -async $::mplayer_t {playFilm [list [thread::id] $cmd]}}]
+}
+
+set video_info_list ""
+set video_info_done 0
+set vinfo_t [thread::create {
+	proc getVideoInfo {ID command} {
+		set mplayerIO [open "| $command" r+]
+		while {[gets $mplayerIO logMsg] >= 0} {
+			flush $mplayerIO
+			switch -regexp -matchvar vars $logMsg {
+			ID_VIDEO_([A-Z]+)\=(.*) -
+			ID_([A-Z]+)\=(.*) {
+				#puts "[lindex $vars 1][lindex $vars 2]"
+				eval [subst {thread::send -async $ID {lappend video_info_list [lindex $vars 1] [lindex $vars 2]}}]
+			}
+			}
+		}
+		puts "Thread Exit!"
+		eval [subst {thread::send -async $ID {set video_info_done 1}}]
+	}
+	thread::wait
+}]
+
+proc getVideoInfo {FilmName} {
+	set cmd "$::MPLAYER -identify $FilmName -nosound -vc dummy -vo null"
+	eval [subst {thread::send -async $::vinfo_t {getVideoInfo [list [thread::id] $cmd]}}]
 }
 
 proc setWidth {obj width} {
@@ -115,6 +148,13 @@ foreach s {video videoInfo options clipList} {
 	grid $lblfme($s) -sticky news -columnspan 1
 }
 
+createLblFme videoInfo .videoInfo $lblfmeText(videoInfo)
+grid $lblfme(videoInfo) -sticky news -columnspan 1
+wm protocol .videoInfo WM_DELETE_WINDOW {
+	wm withdraw .videoInfo
+	#puts [wm geometry .videoInfo]
+}
+
 #---------------Video File Label Frame Start----------------
 createBtn "videoPath" $lblfme(video) "..." 1
 createEnt "videoPath" $lblfme(video) 0
@@ -142,49 +182,33 @@ $btn(videoPath) configure -command {
 	}
 							
 	set ret [videoNamePreprocessing $video_path]
-	playFilm $ret
 	set entVar(videoPath) $ret
 	set entVar(videoSize) "[expr [file size $entVar(videoPath)]/1000000] MB"
-	set mplayerCmd "$MPLAYER -identify $entVar(videoPath) -nosound -vc dummy -vo null"
-	set mplayerIO [open "| $mplayerCmd" r+]
-	while {[gets $mplayerIO logMsg] >= 0} {
-		flush $mplayerIO
-		switch -regexp -matchvar vars $logMsg {
-		ID_VIDEO_([A-Z]+)\=(.*) {
-			switch [lindex $vars 1] {
-			"WIDTH" {set entVar(videoRes) [lindex $vars 2]}
-			"HEIGHT" {append entVar(videoRes) "x[lindex $vars 2]"}
-			"BITRATE" {set entVar([lindex $vars 1]) "[expr [lindex $vars 2]/1000] kbps"}
-			default {
-				if {[info exists entVar([lindex $vars 1])]} {
-					set entVar([lindex $vars 1]) [lindex $vars 2]
-				}
-			}
-			}
-		}
-		ID_([A-Z]+)\=(.*) {
-			switch [lindex $vars 1] {
-			"LENGTH" {set entVar([lindex $vars 1]) "[lindex $vars 2] s"}
-			default {
-				if {[info exists entVar([lindex $vars 1])]} {
-					set entVar([lindex $vars 1]) [lindex $vars 2]
-				}
-			}
-			}
-		}
-		}
-		mdelay 1
+	set video_info_list ""
+	set video_info_done 0
+	getVideoInfo $entVar(videoPath)
+	while {!$video_info_done} {
+		mdelay 100
 	}
-	
-		switch -nocase [file extension $entVar(videoPath)] {
-		".mov" {set defaultArgsIdx 3}
-		".wmv" {set defaultArgsIdx 2}
-		".mp4" -
-		".avi" -
-		default {set defaultArgsIdx 0}
+	array set video_info_array $video_info_list
+	foreach s {FORMAT BITRATE WIDTH HEIGHT LENGTH FPS ASPECT} {
+		switch $s {
+		BITRATE {set entVar($s) "[expr $video_info_array($s)/1000].[expr $video_info_array($s)%1000] Kbps"}
+		LENGTH {set entVar($s) "$video_info_array($s) s"}
+		default {set entVar($s) $video_info_array($s)}
 		}
-							
-		set defaultArgs [lindex $argsList $defaultArgsIdx]
+	}
+	wm deiconify .videoInfo
+	
+	switch -nocase [file extension $entVar(videoPath)] {
+	".mov" {set defaultArgsIdx 3}
+	".wmv" {set defaultArgsIdx 2}
+	".mp4" -
+	".avi" -
+	default {set defaultArgsIdx 0}
+	}						
+	set defaultArgs [lindex $argsList $defaultArgsIdx]
+	playFilm $ret
 }
 
 proc videoNamePreprocessing {video_name} {
@@ -206,22 +230,22 @@ proc videoNamePreprocessing {video_name} {
 #---------------Video File Label Frame End  ----------------
 
 #---------------Video Information Label Frame Start----------------
-set lblText(FORMAT)	"Format"
+set lblText(FORMAT)		"Format"
 set lblText(BITRATE)	"Bit Rate"
-set lblText(videoRes)	"Resolution"
-set lblText(LENGTH)	"Length"
-set lblText(FPS)	"FPS"
+set lblText(WIDTH)		"Width"
+set lblText(HEIGHT)		"HEIGHT"
+set lblText(LENGTH)		"Length"
+set lblText(FPS)		"FPS"
+set lblText(ASPECT)		"Aspect"
 set lblText(videoSize)	"Video Size"
 
 set i 0
-foreach s {FORMAT BITRATE FPS videoRes LENGTH videoSize} {
-	createLbl $s $lblfme(videoInfo) $lblText($s) 9
+foreach s {FORMAT BITRATE WIDTH HEIGHT LENGTH FPS ASPECT videoSize} {
+	createLbl $s $lblfme(videoInfo) $lblText($s) 10
 	createEnt $s $lblfme(videoInfo) 15
 	$ent($s) configure -state readonly
 	set entVar($s) ""
-	grid $lbl($s) $ent($s) -sticky nes -columnspan 1 -column [expr $i % 6] -row [expr $i / 6]
-	grid $ent($s) -sticky news -columnspan 1 -column [expr $i % 6 + 1] -row [expr $i / 6]
-	set i [expr $i + 2]
+	grid $lbl($s) $ent($s)
 }
 #---------------Video Information Label Frame End  ----------------
 
@@ -627,7 +651,7 @@ proc renameFilmFiles { } {
 				set ::prgBarVar(splitStatus) [expr {int($current_pos/[lindex $line 3]*100)}]
 				set ::entVar(percent) "$::prgBarVar(splitStatus)%"
 			}
-			puts $logMsg
+			#puts $logMsg
 			mdelay 1
 		}
 	}
