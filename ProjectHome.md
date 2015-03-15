@@ -1,0 +1,1 @@
+This is a simple tool for splitting movies with mencoder. You have to download mencoder from its official website, and modify this script to the correct path where mencoder is located. It can be run under Linux and Windows.
